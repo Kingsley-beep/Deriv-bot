@@ -1,0 +1,12 @@
+{
+  "name": "deriv-xauusd-bot",
+  "version": "1.0.0",
+  "description": "Deriv XAU/USD Trading Bot by Atsem Kingsley",
+  "main": "deriv-bot.js",
+  "scripts": {
+    "start": "node deriv-bot.js"
+  },
+  "dependencies": {
+    "ws": "^8.0.0"
+  }
+}
