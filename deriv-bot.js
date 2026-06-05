@@ -66,7 +66,7 @@ function analyzeSignal() {
 function connect() {
   log('Connecting to Deriv...', 'INFO');
   // Updated to new Deriv API endpoint
-  ws = new WebSocket('wss://green.derivws.com/websockets/v3?app_id=1089');
+ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=1089');
 
   ws.on('open', () => {
     log('Connected! Authorizing...', 'INFO');
