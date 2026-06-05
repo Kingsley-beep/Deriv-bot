@@ -9,7 +9,7 @@
 const WebSocket = require('ws');
 
 const CONFIG = {
-  token: 'YOUR_TOKEN_HERE', // <-- paste your token here
+  token: token: process.env.DERIV_TOKEN, // <-- paste your token here
   symbol: 'frxXAUUSD',      // Gold (XAU/USD)
   tradeAmount: 1,            // $ amount per trade (start small!)
   takeProfitPips: 50,        // take profit in pips
