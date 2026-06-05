@@ -1,11 +1,12 @@
 // ============================================
-// DERIV XAU/USD TRADING BOT - Updated API
+// DERIV XAU/USD TRADING BOT - New API v2
 // ============================================
 
 const WebSocket = require('ws');
+const https = require('https');
 
 const CONFIG = {
-  token: process.env.DERIV_TOKEN,
+  token: process.env.DERIV_TOKEN,  // your a1- token
   symbol: 'frxXAUUSD',
   tradeAmount: 1,
   rsiPeriod: 14,
@@ -16,6 +17,7 @@ const CONFIG = {
 let priceHistory = [];
 let isTrading = false;
 let ws;
+let accountId = null;
 
 function log(message, type = 'INFO') {
   const time = new Date().toLocaleTimeString();
@@ -23,6 +25,71 @@ function log(message, type = 'INFO') {
   console.log(`[${time}] ${icons[type] || '📌'} ${message}`);
 }
 
+// REST API call helper
+function restCall(method, path, body = null) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.derivws.com',
+      path: path,
+      method: method,
+      headers: {
+        'Authorization': `Bearer ${CONFIG.token}`,
+        'Deriv-App-ID': '1089',
+        'Content-Type': 'application/json'
+      }
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { resolve(data); }
+      });
+    });
+    req.on('error', reject);
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+// Get accounts list
+async function getAccounts() {
+  log('Getting account list...', 'INFO');
+  try {
+    const response = await restCall('GET', '/trading/v1/options/accounts');
+    if (response.data && response.data.length > 0) {
+      accountId = response.data[0].id;
+      log(`Account ID: ${accountId}`, 'INFO');
+      return accountId;
+    } else {
+      log(`Accounts response: ${JSON.stringify(response)}`, 'ERROR');
+      return null;
+    }
+  } catch (err) {
+    log(`Error getting accounts: ${err.message}`, 'ERROR');
+    return null;
+  }
+}
+
+// Get OTP for WebSocket connection
+async function getOTP() {
+  log('Getting WebSocket OTP...', 'INFO');
+  try {
+    const response = await restCall('POST', `/trading/v1/options/accounts/${accountId}/otp`);
+    if (response.data && response.data.url) {
+      log('Got WebSocket URL!', 'INFO');
+      return response.data.url;
+    } else {
+      log(`OTP response: ${JSON.stringify(response)}`, 'ERROR');
+      return null;
+    }
+  } catch (err) {
+    log(`Error getting OTP: ${err.message}`, 'ERROR');
+    return null;
+  }
+}
+
+// Calculate RSI
 function calculateRSI(prices, period) {
   if (prices.length < period + 1) return null;
   let gains = 0, losses = 0;
@@ -63,14 +130,14 @@ function analyzeSignal() {
   return null;
 }
 
-function connect() {
-  log('Connecting to Deriv...', 'INFO');
-  // Updated to new Deriv API endpoint
-ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=1089');
+// Connect via new WebSocket URL
+function connectWebSocket(wsUrl) {
+  log('Connecting to Deriv WebSocket...', 'INFO');
+  ws = new WebSocket(wsUrl);
 
   ws.on('open', () => {
-    log('Connected! Authorizing...', 'INFO');
-    ws.send(JSON.stringify({ authorize: CONFIG.token }));
+    log('Connected! Subscribing to price feed...', 'INFO');
+    ws.send(JSON.stringify({ ticks: CONFIG.symbol, subscribe: 1 }));
   });
 
   ws.on('message', (data) => {
@@ -79,8 +146,8 @@ ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=1089');
   });
 
   ws.on('close', () => {
-    log('Connection closed. Reconnecting in 5s...', 'ERROR');
-    setTimeout(connect, 5000);
+    log('Connection closed. Reconnecting in 10s...', 'ERROR');
+    setTimeout(startBot, 10000);
   });
 
   ws.on('error', (err) => {
@@ -90,30 +157,12 @@ ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=1089');
 
 function handleMessage(msg) {
   if (msg.error) {
-    log(`API Error: ${msg.error.message}`, 'ERROR');
+    log(`API Error: ${JSON.stringify(msg.error)}`, 'ERROR');
     return;
   }
-  switch (msg.msg_type) {
-    case 'authorize':
-      log(`Authorized as: ${msg.authorize.email}`, 'INFO');
-      log(`Balance: $${msg.authorize.balance}`, 'INFO');
-      subscribeToTicks();
-      break;
-    case 'tick':
-      handleTick(msg.tick);
-      break;
-    case 'buy':
-      handleBuy(msg.buy);
-      break;
-    case 'proposal_open_contract':
-      handleContractUpdate(msg.proposal_open_contract);
-      break;
+  if (msg.msg_type === 'tick') {
+    handleTick(msg.tick);
   }
-}
-
-function subscribeToTicks() {
-  log(`Subscribing to ${CONFIG.symbol} price feed...`, 'INFO');
-  ws.send(JSON.stringify({ ticks: CONFIG.symbol, subscribe: 1 }));
 }
 
 function handleTick(tick) {
@@ -124,52 +173,33 @@ function handleTick(tick) {
   const signal = analyzeSignal();
   if (signal) {
     log(`Signal detected: ${signal}`, 'SIGNAL');
-    placeTrade(signal);
   }
 }
 
-function placeTrade(direction) {
-  isTrading = true;
-  const contractType = direction === 'BUY' ? 'CALL' : 'PUT';
-  log(`Placing ${direction} trade...`, 'TRADE');
-  ws.send(JSON.stringify({
-    buy: 1,
-    price: CONFIG.tradeAmount,
-    parameters: {
-      contract_type: contractType,
-      symbol: CONFIG.symbol,
-      duration: 5,
-      duration_unit: 'm',
-      basis: 'stake',
-      amount: CONFIG.tradeAmount,
-      currency: 'USD'
-    }
-  }));
-}
+// Main start function
+async function startBot() {
+  log('🤖 DERIV XAU/USD TRADING BOT STARTING...', 'INFO');
+  log(`Symbol: ${CONFIG.symbol}`, 'INFO');
+  log('Using DEMO account - no real money at risk', 'INFO');
 
-function handleBuy(buy) {
-  log(`Trade opened! Contract: ${buy.contract_id}`, 'TRADE');
-  ws.send(JSON.stringify({
-    proposal_open_contract: 1,
-    contract_id: buy.contract_id,
-    subscribe: 1
-  }));
-}
-
-function handleContractUpdate(contract) {
-  if (contract.is_sold) {
-    const profit = contract.profit;
-    const status = profit > 0 ? 'WIN' : 'LOSS';
-    log(`Trade closed! Profit: $${profit.toFixed(2)}`, status);
-    isTrading = false;
-    setTimeout(() => log('Ready for next trade!', 'INFO'), 30000);
+  // Step 1: Get account ID
+  const id = await getAccounts();
+  if (!id) {
+    log('Failed to get account. Retrying in 30s...', 'ERROR');
+    setTimeout(startBot, 30000);
+    return;
   }
+
+  // Step 2: Get WebSocket URL
+  const wsUrl = await getOTP();
+  if (!wsUrl) {
+    log('Failed to get WebSocket URL. Retrying in 30s...', 'ERROR');
+    setTimeout(startBot, 30000);
+    return;
+  }
+
+  // Step 3: Connect
+  connectWebSocket(wsUrl);
 }
 
-log('🤖 DERIV XAU/USD TRADING BOT STARTING...', 'INFO');
-log(`Symbol: ${CONFIG.symbol}`, 'INFO');
-log(`Trade Amount: $${CONFIG.tradeAmount}`, 'INFO');
-log('Using DEMO account - no real money at risk', 'INFO');
-log('==========================================', 'INFO');
-
-connect();
+startBot();
